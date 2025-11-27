@@ -20,6 +20,8 @@ use config::EggConfig;
 use cron::CronScheduler;
 use process::ProcessManager;
 
+const PID_FILE: &str = "/tmp/egg.pid";
+
 const BANNER: &str = r#"
     ___  __ _ __ _ 
    / _ \/ _` / _` |
@@ -189,31 +191,57 @@ async fn cmd_restart(cli: &Cli, only: Option<Vec<String>>) -> Result<()> {
 }
 
 async fn cmd_status(cli: &Cli) -> Result<()> {
-    let (config, _) = load_config(cli)?;
+    let (config, config_path) = load_config(cli)?;
 
     println!("{}", BANNER.cyan());
     println!("{}: {}", "Project".bold(), config.project.name);
+    println!("{}: {}", "Config".dimmed(), config_path.display());
     println!();
+
+    // Load saved PIDs if available
+    let _saved_pids = load_pids();
 
     // Show supervisor processes
     let supervisors = config.enabled_supervisors();
     if !supervisors.is_empty() {
         println!("{}", "Supervisor Processes".bold().underline());
         
-        let rows: Vec<ProcessStatusRow> = supervisors.iter().map(|(name, proc)| {
-            ProcessStatusRow {
-                name: (*name).clone(),
-                status: if proc.enabled { "CONFIGURED".to_string() } else { "DISABLED".to_string() },
-                pid: "-".to_string(),
-                restarts: format!("{} instances", proc.numprocs),
+        let mut rows: Vec<ProcessStatusRow> = Vec::new();
+        
+        for (name, proc) in &supervisors {
+            // Check for running processes matching this command
+            let running_pids = find_running_processes(&proc.command);
+            
+            if running_pids.is_empty() {
+                // No processes running
+                rows.push(ProcessStatusRow {
+                    name: (*name).clone(),
+                    status: "STOPPED".to_string(),
+                    pid: "-".to_string(),
+                    restarts: format!("0/{}", proc.numprocs),
+                });
+            } else {
+                // Show all PIDs in one row, comma-separated
+                let pids_str = running_pids.iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                
+                rows.push(ProcessStatusRow {
+                    name: (*name).clone(),
+                    status: "RUNNING".to_string(),
+                    pid: pids_str,
+                    restarts: format!("{}/{}", running_pids.len(), proc.numprocs),
+                });
             }
-        }).collect();
+        }
 
+        // Build table and colorize
         let mut table = Table::new(rows).to_string();
-        // Colorize status labels in the rendered table string only.
-        table = table.replace("CONFIGURED", &"CONFIGURED".green().to_string())
-                     .replace("DISABLED", &"DISABLED".red().to_string());
-
+        table = table
+            .replace("RUNNING", &"RUNNING".green().to_string())
+            .replace("STOPPED", &"STOPPED".red().to_string());
+        
         println!("{}", table);
         println!();
     }
@@ -223,21 +251,96 @@ async fn cmd_status(cli: &Cli) -> Result<()> {
     if !crons.is_empty() {
         println!("{}", "Cron Jobs".bold().underline());
         
+        // Check if egg cron scheduler is running
+        let egg_running = is_egg_running();
+        
         let rows: Vec<CronStatusRow> = crons.iter().map(|(name, cron)| {
             CronStatusRow {
                 name: (*name).clone(),
                 schedule: cron.schedule.clone(),
                 last_run: "-".to_string(),
-                next_run: "-".to_string(),
-                run_count: "0".to_string(),
+                next_run: if egg_running { "pending".to_string() } else { "-".to_string() },
+                run_count: if egg_running { "active".to_string() } else { "inactive".to_string() },
             }
         }).collect();
 
-        let table = Table::new(rows).to_string();
+        let mut table = Table::new(rows).to_string();
+        table = table
+            .replace("active", &"active".green().to_string())
+            .replace("inactive", &"inactive".red().to_string());
+        
         println!("{}", table);
     }
 
     Ok(())
+}
+
+/// Find running processes that match a command pattern
+fn find_running_processes(command: &str) -> Vec<u32> {
+    use std::process::Command;
+    
+    // Extract key part of command to search for
+    let search_pattern = if command.contains("artisan") {
+        // For Laravel commands, search for the artisan part
+        command.split_whitespace()
+            .skip_while(|s| !s.contains("artisan"))
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ")
+    } else {
+        // Use first 50 chars of command
+        command.chars().take(50).collect()
+    };
+
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("ps aux | grep -F '{}' | grep -v grep", search_pattern))
+        .output();
+
+    match output {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            stdout
+                .lines()
+                .filter_map(|line| {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() > 1 {
+                        parts[1].parse::<u32>().ok()
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Check if egg is currently running (has a process managing crons)
+fn is_egg_running() -> bool {
+    use std::process::Command;
+    
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg("ps aux | grep -E 'egg (up|run)' | grep -v grep")
+        .output();
+
+    match output {
+        Ok(out) => !out.stdout.is_empty(),
+        Err(_) => false,
+    }
+}
+
+/// Load saved PIDs from PID file
+fn load_pids() -> HashMap<String, Vec<u32>> {
+    use std::fs;
+    
+    if let Ok(content) = fs::read_to_string(PID_FILE) {
+        if let Ok(pids) = serde_json::from_str(&content) {
+            return pids;
+        }
+    }
+    HashMap::new()
 }
 
 async fn cmd_logs(_name: Option<String>, _follow: bool, _lines: usize) -> Result<()> {

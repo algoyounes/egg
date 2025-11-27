@@ -37,6 +37,9 @@ chrono = "0.4"
 anyhow = "1.0"
 thiserror = "1.0"
 
+# JSON for PID file
+serde_json = "1.0"
+
 # File watching (for future hot-reload)
 notify = "6.1"
 
