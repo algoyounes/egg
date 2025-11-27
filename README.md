@@ -2,7 +2,8 @@
 
 A dev environment process manager for Laravel applications. Manage supervisor processes and cron jobs from a single `.eggrc.toml` file.
 
-> **Note:** Egg is designed for setting up the dev environment. For production, use the `egg export` command to generate proper Supervisor/Systemd configurations.
+> [!Note]
+> **Egg** is designed for setting up the dev environment. For production, use the `egg export` command to generate proper Supervisor/Systemd configurations.
 
 ## Features
 
