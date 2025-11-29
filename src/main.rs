@@ -11,7 +11,7 @@ mod process;
 use anyhow::Result;
 use clap::Parser;
 use colored::Colorize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use tabled::{Table, Tabled};
 
@@ -250,25 +250,50 @@ async fn cmd_status(cli: &Cli) -> Result<()> {
     let crons = config.enabled_crons();
     if !crons.is_empty() {
         println!("{}", "Cron Jobs".bold().underline());
-        
-        // Check if egg cron scheduler is running
+
         let egg_running = is_egg_running();
-        
-        let rows: Vec<CronStatusRow> = crons.iter().map(|(name, cron)| {
-            CronStatusRow {
-                name: (*name).clone(),
-                schedule: cron.schedule.clone(),
-                last_run: "-".to_string(),
-                next_run: if egg_running { "pending".to_string() } else { "-".to_string() },
-                run_count: if egg_running { "active".to_string() } else { "inactive".to_string() },
-            }
-        }).collect();
+
+        // Use HashSet to automatically deduplicate human-readable schedules
+        let mut humans = HashSet::new();
+        let rows: Vec<CronStatusRow> = crons
+            .iter()
+            .map(|(name, cron)| {
+                let human = cron_human_readable(&cron.schedule);
+                humans.insert(human.clone());
+
+                let (next_run, run_count) = if egg_running {
+                    ("pending", "active")
+                } else {
+                    ("-", "inactive")
+                };
+
+                CronStatusRow {
+                    name: name.to_string(),
+                    schedule: format!("{} ({})", cron.schedule, human),
+                    last_run: "-".to_string(),
+                    next_run: next_run.to_string(),
+                    run_count: run_count.to_string(),
+                }
+            })
+            .collect();
 
         let mut table = Table::new(rows).to_string();
+
+        // Cache colored strings to avoid recreating them
+        let active_colored = "active".green().to_string();
+        let inactive_colored = "inactive".red().to_string();
         table = table
-            .replace("active", &"active".green().to_string())
-            .replace("inactive", &"inactive".red().to_string());
-        
+            .replace("active", &active_colored)
+            .replace("inactive", &inactive_colored);
+
+        // Apply dimming to human-readable schedule descriptions
+        for human in humans {
+            table = table.replace(
+                &format!("({})", human),
+                &format!("({})", human.dimmed()),
+            );
+        }
+
         println!("{}", table);
     }
 
@@ -341,6 +366,59 @@ fn load_pids() -> HashMap<String, Vec<u32>> {
         }
     }
     HashMap::new()
+}
+
+fn cron_human_readable(expr: &str) -> String {
+    let s = expr.trim();
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() != 5 {
+        return "custom".to_string();
+    }
+
+    let minute = parts[0];
+    let hour = parts[1];
+    let day = parts[2];
+    let month = parts[3];
+    let weekday = parts[4];
+
+    // every minute
+    if minute == "*" && hour == "*" && day == "*" && month == "*" && weekday == "*" {
+        return "every minute".to_string();
+    }
+
+    // every N minutes like "*/5 * * * *"
+    if minute.starts_with("*/") && hour == "*" && day == "*" && month == "*" && weekday == "*" {
+        if let Ok(n) = minute[2..].parse::<u32>() {
+            return format!("every {} minutes", n);
+        }
+    }
+
+    // hourly at minute X -> "0 * * * *" or "15 * * * *"
+    if hour == "*" && day == "*" && month == "*" && weekday == "*" {
+        if minute != "*" {
+            return format!("hourly at minute {}", minute);
+        }
+    }
+
+    // every N hours like "0 */6 * * *"
+    if minute == "0" && hour.starts_with("*/") && day == "*" && month == "*" && weekday == "*" {
+        if let Ok(n) = hour[2..].parse::<u32>() {
+            return format!("every {} hours", n);
+        }
+    }
+
+    // daily at HH:MM -> "M H * * *"
+    if day == "*" && month == "*" && weekday == "*" && minute != "*" && hour != "*" {
+        return format!("daily at {}:{}", hour, minute);
+    }
+
+    // weekly on weekday at HH:MM -> "M H * * D"
+    if day == "*" && month == "*" && weekday != "*" && minute != "*" && hour != "*" {
+        return format!("weekly on {} at {}:{}", weekday, hour, minute);
+    }
+
+    // fallback
+    "custom".to_string()
 }
 
 async fn cmd_logs(_name: Option<String>, _follow: bool, _lines: usize) -> Result<()> {
