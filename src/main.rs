@@ -279,12 +279,13 @@ async fn cmd_status(cli: &Cli) -> Result<()> {
 
         let mut table = Table::new(rows).to_string();
 
-        // Cache colored strings to avoid recreating them
         let active_colored = "active".green().to_string();
         let inactive_colored = "inactive".red().to_string();
         table = table
-            .replace("active", &active_colored)
-            .replace("inactive", &inactive_colored);
+            .replace("inactive", "___INACTIVE___")
+            .replace("active", "___ACTIVE___")
+            .replace("___INACTIVE___", &inactive_colored)
+            .replace("___ACTIVE___", &active_colored);
 
         // Apply dimming to human-readable schedule descriptions
         for human in humans {
