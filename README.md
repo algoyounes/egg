@@ -196,28 +196,6 @@ user = "www-data"         # Run as user (optional)
 description = "..."       # Description (optional)
 ```
 
-## Environment Variable Expansion
-
-Commands can include environment variable placeholders:
-
-```toml
-[supervisor.queue]
-command = "php artisan queue:work --queue={QUEUE_NAME}"
-```
-
-## Development vs Production
-
-**Development** (use `egg up`):
-- Quick iteration
-- Combined logs
-- Easy start/stop
-
-**Production** (use `egg export`):
-- Use Supervisor or Systemd
-- Proper process isolation
-- System integration
-- Monitoring & alerts
-
 ## License
 
 MIT
